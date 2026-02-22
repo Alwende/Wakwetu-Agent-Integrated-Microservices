@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Wakwetu AIME Project: High-Availability VPC for EKS and Agentic AI (Dan Alwende, PMP)'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcBlock
+          - PublicSubnet01Block
+          - PrivateSubnet01Block
+
+Parameters:
+  VpcBlock:
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnet01Block:
+    Type: String
+    Default: 10.0.0.0/24
+  PublicSubnet02Block:
+    Type: String
+    Default: 10.0.1.0/24
+  PublicSubnet03Block:
+    Type: String
+    Default: 10.0.2.0/24
+  PrivateSubnet01Block:
+    Type: String
+    Default: 10.0.3.0/24
+  PrivateSubnet02Block:
+    Type: String
+    Default: 10.0.4.0/24
+  PrivateSubnet03Block:
+    Type: String
+    Default: 10.0.5.0/24
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Wakwetu-AIME-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Wakwetu-AIME-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # PUBLIC SUBNETS (For Load Balancers)
+  PublicSubnet01:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet01Block
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Public-AZ1
+        - Key: kubernetes.io/role/elb
+          Value: 1
+
+  PublicSubnet02:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet02Block
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Public-AZ2
+        - Key: kubernetes.io/role/elb
+          Value: 1
+
+  # PRIVATE SUBNETS (For EKS Workers & AI Agents)
+  PrivateSubnet01:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PrivateSubnet01Block
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Private-AZ1
+        - Key: kubernetes.io/role/internal-elb
+          Value: 1
+
+  PrivateSubnet02:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: !Ref PrivateSubnet02Block
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Private-AZ2
+        - Key: kubernetes.io/role/internal-elb
+          Value: 1
+
+  # NAT GATEWAY (Required for Private Subnets to talk to the Internet/EKS API)
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet01
+
+  # ROUTING LOGIC
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Public-Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet01RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet01
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Wakwetu-Private-Routes
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet01RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet01
+
+Outputs:
+  VpcId:
+    Description: The VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
